@@ -11,6 +11,17 @@
 *.war
 *.ear
 
+# Environment variables and secrets
+.env
+.env.local
+.env.*.local
+*.key
+config.json
+
+# API keys and credentials
+credentials.json
+secrets.json
+
 # OS files
 .DS_Store
 Thumbs.db
