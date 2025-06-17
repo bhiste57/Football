@@ -1,0 +1,10 @@
+# TODO Hadrien:
+1) read documentation machine learning
+2) implement quick process to guess future results with probability
+3) add build-in class structure
+4) reshape support_functions.py as support_classes.py
+5) class for analysis plotting ?
+
+
+# TODO Brian:
+1) import screenshots of results from "https://www.flashscore.com/football/france/ligue-1-2018-2019/archive/" ?
