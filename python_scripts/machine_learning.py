@@ -4,19 +4,16 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import accuracy_score, classification_report
+import matplotlib.pyplot as plt
 from python_scripts.support_functions import fetch_excel_database
+import seaborn as sns
 
 
-# --- 1. Load your data ---
+# --- 1. Load and prepare your data (from your original code) ---
 df = fetch_excel_database()
-
-# Sort by day to ensure correct chronological feature engineering
 df.sort_values(by='day', ignore_index=True, inplace=True)
 
-
-# --- 2. Feature Engineering ---
-
-# Create Result (Target Variable)
+# --- 2. Feature Engineering (from your original code) ---
 def get_result(row: pd.Series) -> str:
     if row['home_score'] > row['away_score']:
         return 'H' # Home Win
@@ -24,6 +21,7 @@ def get_result(row: pd.Series) -> str:
         return 'A' # Away Win
     else:
         return 'D' # Draw
+
 df['result'] = df.apply(get_result, axis=1)
 
 # Initialize dictionaries to store team statistics up to the current match
@@ -39,18 +37,18 @@ for i, row in df.iterrows():
     home_team = row['home_team']
     away_team = row['away_team']
 
-    # --- Calculate average points won per game for the CURRENT match ---
-    total_home_team_games = sum([team_history[home_team][k] for k in ['wins', 'draws', 'losses']]) # number of games played by the home team
+    # Calculate average points won per game for the CURRENT match
+    total_home_team_games = sum([team_history[home_team][k] for k in ['wins', 'draws', 'losses']])
     current_home_team_form = (team_history[home_team]['wins'] * 3 + team_history[home_team]['draws'] * 1) / (total_home_team_games if total_home_team_games > 0 else 1)
 
-    total_away_team_games = sum([team_history[away_team][k] for k in ['wins', 'draws', 'losses']]) # number of games played by the away team
+    total_away_team_games = sum([team_history[away_team][k] for k in ['wins', 'draws', 'losses']])
     current_away_team_form = (team_history[away_team]['wins'] * 3 + team_history[away_team]['draws'] * 1) / (total_away_team_games if total_away_team_games > 0 else 1)
 
     # Append to lists
     home_team_form_ratio_list.append(current_home_team_form)
     away_team_form_ratio_list.append(current_away_team_form)
 
-    # --- Update team history for the NEXT match (after this match's result is known) ---
+    # Update team history for the NEXT match
     if row['result'] == 'H':
         team_history[home_team]['wins'] += 1
         team_history[away_team]['losses'] += 1
@@ -61,11 +59,11 @@ for i, row in df.iterrows():
         team_history[home_team]['losses'] += 1
         team_history[away_team]['wins'] += 1
 
-# Add engineered features to the DataFrame # should be matching the teams since we re iterating on the rows before
+# Add engineered features to the DataFrame
 df['home_team_form_ratio'] = home_team_form_ratio_list
 df['away_team_form_ratio'] = away_team_form_ratio_list
 
-# Drop rows that have NaN values for features (e.g., very first few games with no history)
+# Drop rows that have NaN values for features
 df.dropna(inplace=True)
 
 # Encode team names
@@ -74,127 +72,244 @@ le_away_team = LabelEncoder()
 df['home_team_encoded'] = le_home_team.fit_transform(df['home_team'])
 df['away_team_encoded'] = le_away_team.fit_transform(df['away_team'])
 
-# Features (X) and Target (y) - SIMPLIFIED FEATURES
+# Define features
 features = [
     'home_team_form_ratio',
     'away_team_form_ratio',
     'home_team_encoded',
-    'away_team_encoded']
-X = df[features]
-y = df['result']
+    'away_team_encoded'
+]
 
-# Encode the target variable (H, D, A to numbers)
-le_result = LabelEncoder()
-y_encoded = le_result.fit_transform(y)
 
-# --- 3. Train-Test Split (Time-based split is crucial for realistic evaluation) ---
-X_train, X_test, y_train, y_test = train_test_split(X, y_encoded, test_size=0.01, random_state=42, stratify=y_encoded)
-# Using a very small test_size here because the dummy data is small.
-# For 38 rounds, use a time-based split: X_train = df[df['day'] <= split_date][features] etc.
 
-# Scale numerical features (even just form points benefit from scaling)
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-X_test_scaled = scaler.transform(X_test)
-
-# --- 4. Model Training: Random Forest Classifier ---
-rf_clf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
-rf_clf.fit(X_train_scaled, y_train)
-
-# --- Evaluate the model (optional, but good practice) ---
-y_pred = rf_clf.predict(X_test_scaled)
-print("Model Evaluation on Test Set (Simplified Features):")
-print(f"Accuracy: {accuracy_score(y_test, y_pred):.4f}")
-print("Classification Report:\n", classification_report(y_test, y_pred, target_names=le_result.classes_))
-
-# --- 5. Prediction Function for New Games ---
-
-def predict_match_outcome_simple(home_team_name, away_team_name, model, scaler, team_history_data,
-                                  le_home, le_away, le_result_encoder, features_list):
+def train_model_up_to_day(df, target_day, features):
     """
-    Predicts the outcome (H, A, D) and probabilities for a single new match using simplified features.
-
-    Args:
-        home_team_name (str): Name of the home team.
-        away_team_name (str): Name of the away team.
-        model: Trained scikit-learn model (e.g., RandomForestClassifier).
-        scaler: Trained StandardScaler used during training.
-        team_history_data (dict): Dictionary containing the latest calculated form points for all teams.
-        le_home (LabelEncoder): LabelEncoder fitted on home team names.
-        le_away (LabelEncoder): LabelEncoder fitted on away team names.
-        le_result_encoder (LabelEncoder): LabelEncoder fitted on match results (H, A, D).
-        features_list (list): List of feature names used during training.
-
-    Returns:
-        tuple: (predicted_outcome_label, probabilities_dict)
+    Train model only on data up to (but not including) the target day
     """
-    home_team_stats = team_history_data.get(home_team_name, None)
-    away_team_stats = team_history_data.get(away_team_name, None)
+    # Only use data BEFORE the target day for training
+    train_data = df[df['day'] < target_day].copy()
 
-    if home_team_stats is None:
-        print(f"Warning: No historical data found for Home Team '{home_team_name}'. Using default 0s.")
-        home_team_stats = {'wins': 0, 'draws': 0, 'losses': 0}
-    if away_team_stats is None:
-        print(f"Warning: No historical data found for Away Team '{away_team_name}'. Using default 0s.")
-        away_team_stats = {'wins': 0, 'draws': 0, 'losses': 0}
+    if len(train_data) == 0:
+        print(f"No training data available before day {target_day}")
+        return None, None, None, None, None
 
-    total_home_games = sum([home_team_stats[k] for k in ['wins', 'draws', 'losses']])
-    current_home_form = (home_team_stats['wins'] * 3 + home_team_stats['draws'] * 1) / (total_home_games if total_home_games > 0 else 1)
+    # Prepare features and target
+    X_train = train_data[features]
+    y_train = train_data['result']
 
-    total_away_games = sum([away_team_stats[k] for k in ['wins', 'draws', 'losses']])
-    current_away_form = (away_team_stats['wins'] * 3 + away_team_stats['draws'] * 1) / (total_away_games if total_away_games > 0 else 1)
+    # Encode target
+    le_result = LabelEncoder()
+    y_train_encoded = le_result.fit_transform(y_train)
 
-    try:
-        encoded_home_team = le_home.transform([home_team_name])[0]
-    except ValueError:
-        print(f"Warning: Home team '{home_team_name}' not seen during training. Assigning default encoding.")
-        encoded_home_team = 0
-    try:
-        encoded_away_team = le_away.transform([away_team_name])[0]
-    except ValueError:
-        print(f"Warning: Away team '{away_team_name}' not seen during training. Assigning default encoding.")
-        encoded_away_team = 0
+    # Scale features
+    scaler = StandardScaler()
+    X_train_scaled = scaler.fit_transform(X_train)
 
-    new_match_df = pd.DataFrame([{
-        'home_form_points': current_home_form,
-        'away_form_points': current_away_form,
-        'home_team_encoded': encoded_home_team,
-        'away_team_encoded': encoded_away_team
-    }], columns=features_list)
+    # Train model
+    rf_clf = RandomForestClassifier(n_estimators=100, random_state=42, class_weight='balanced')
+    rf_clf.fit(X_train_scaled, y_train_encoded)
 
-    new_match_scaled = scaler.transform(new_match_df)
+    print(f"Model trained on {len(train_data)} matches from days 1-{target_day - 1}")
 
-    predicted_encoded = model.predict(new_match_scaled)[0]
-    predicted_outcome_label = le_result_encoder.inverse_transform([predicted_encoded])[0]
-
-    probabilities = model.predict_proba(new_match_scaled)[0]
-    probabilities_dict = {}
-    for i, class_label in enumerate(le_result_encoder.classes_):
-        probabilities_dict[class_label] = probabilities[i]
-
-    return predicted_outcome_label, probabilities_dict
-
-# --- Get the final team_history for prediction after processing all historical data ---
-# This dictionary 'team_history' now holds the up-to-date stats (form points only) for all teams.
-final_team_form_stats = {}
-for team, stats in team_history.items():
-    total_games = sum([stats[k] for k in ['wins', 'draws', 'losses']])
-    form = (stats['wins'] * 3 + stats['draws'] * 1) / (total_games if total_games > 0 else 1)
-    final_team_form_stats[team] = {'wins': stats['wins'], 'draws': stats['draws'], 'losses': stats['losses'], 'form_points': form}
+    return rf_clf, scaler, le_result, train_data, X_train_scaled
 
 
-# --- Example Usage for a "Next Round" Game ---
-print("\n--- Predicting for a hypothetical next game (Simplified Model) ---")
-next_home_team = 'Team A' # Replace with actual team names from your league
-next_away_team = 'Team F'
+def predict_day_realistically(df, target_day, features):
+    """
+    Predict results for a specific day using only historical data
+    """
+    # Train model on data before target day
+    model, scaler, le_result, train_data, X_train_scaled = train_model_up_to_day(df, target_day, features)
 
-predicted_outcome, probabilities = predict_match_outcome_simple(
-    next_home_team, next_away_team, rf_clf, scaler, team_history, # Pass team_history directly, as predict_match_outcome_simple needs individual win/draw/loss counts
-    le_home_team, le_away_team, le_result, features
-)
+    if model is None:
+        return None
 
-print(f"\nMatch: {next_home_team} (Home) vs {next_away_team} (Away)")
-print(f"Predicted Outcome: {predicted_outcome}")
-print("Probabilities:")
-for outcome, prob in probabilities.items():
-    print(f"  {outcome}: {prob:.4f}")
+    # Get matches for the target day
+    target_matches = df[df['day'] == target_day].copy()
+
+    if len(target_matches) == 0:
+        print(f"No matches found for day {target_day}")
+        return None
+
+    # Make predictions
+    X_test = target_matches[features]
+    X_test_scaled = scaler.transform(X_test)
+
+    # Get predictions and probabilities
+    predictions_encoded = model.predict(X_test_scaled)
+    predictions = le_result.inverse_transform(predictions_encoded)
+    probabilities = model.predict_proba(X_test_scaled)
+
+    # Add predictions to dataframe
+    target_matches['predicted'] = predictions
+
+    # Add probability columns
+    for i, class_label in enumerate(le_result.classes_):
+        target_matches[f'prob_{class_label}'] = probabilities[:, i]
+
+    # Calculate accuracy
+    accuracy = accuracy_score(target_matches['result'], predictions)
+
+    # Print results
+    print(f"\n=== Day {target_day} Realistic Predictions ===")
+    print(f"Training data: Days 1-{target_day - 1} ({len(train_data)} matches)")
+    print(f"Test data: Day {target_day} ({len(target_matches)} matches)")
+    print(f"Accuracy: {accuracy:.2%}")
+
+    return target_matches, model, scaler, le_result
+
+
+def visualize_realistic_predictions(target_matches, target_day):
+    """
+    Visualize realistic predictions vs actual results
+    """
+    if target_matches is None:
+        return
+
+    fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+    fig.suptitle(f'Day {target_day} Realistic Predictions vs Actual Results', fontsize=16, fontweight='bold')
+
+    # 1. Match-by-match comparison
+    ax1 = axes[0, 0]
+    matches_labels = [f"{row['home_team'][:3]} vs {row['away_team'][:3]}" for _, row in target_matches.iterrows()]
+    x_pos = np.arange(len(matches_labels))
+
+    color_map = {'H': 'green', 'A': 'red', 'D': 'blue'}
+    actual_colors = [color_map[result] for result in target_matches['result']]
+    pred_colors = [color_map[pred] for pred in target_matches['predicted']]
+
+    width = 0.35
+    ax1.bar(x_pos - width / 2, [1] * len(matches_labels), width, label='Actual', color=actual_colors, alpha=0.7)
+    ax1.bar(x_pos + width / 2, [1] * len(matches_labels), width, label='Predicted', color=pred_colors, alpha=0.7)
+
+    ax1.set_xlabel('Matches')
+    ax1.set_ylabel('Results')
+    ax1.set_title('Match-by-Match Comparison')
+    ax1.set_xticks(x_pos)
+    ax1.set_xticklabels(matches_labels, rotation=45, ha='right')
+    ax1.legend()
+    ax1.set_ylim(0, 1.2)
+
+    # Add result labels
+    for i, (actual, pred) in enumerate(zip(target_matches['result'], target_matches['predicted'])):
+        ax1.text(i - width / 2, 0.5, actual, ha='center', va='center', fontweight='bold')
+        ax1.text(i + width / 2, 0.5, pred, ha='center', va='center', fontweight='bold')
+
+    # 2. Accuracy pie chart
+    ax2 = axes[0, 1]
+    correct = sum(target_matches['result'] == target_matches['predicted'])
+    total = len(target_matches)
+
+    ax2.pie([correct, total - correct],
+            labels=[f'Correct ({correct})', f'Wrong ({total - correct})'],
+            autopct='%1.1f%%', startangle=90, colors=['lightgreen', 'lightcoral'])
+    ax2.set_title(f'Prediction Accuracy: {correct / total:.2%}')
+
+    # 3. Confidence distribution
+    ax3 = axes[1, 0]
+
+    # Get max probability for each prediction (confidence)
+    prob_cols = [col for col in target_matches.columns if col.startswith('prob_')]
+    confidences = target_matches[prob_cols].max(axis=1)
+
+    ax3.hist(confidences, bins=10, alpha=0.7, color='skyblue', edgecolor='black')
+    ax3.set_xlabel('Prediction Confidence')
+    ax3.set_ylabel('Number of Matches')
+    ax3.set_title('Distribution of Prediction Confidence')
+    ax3.axvline(confidences.mean(), color='red', linestyle='--', label=f'Mean: {confidences.mean():.3f}')
+    ax3.legend()
+
+    # 4. Detailed results table
+    ax4 = axes[1, 1]
+    ax4.axis('tight')
+    ax4.axis('off')
+
+    table_data = []
+    for idx, row in target_matches.iterrows():
+        confidence = max([row[col] for col in prob_cols])
+        correct_symbol = '✓' if row['result'] == row['predicted'] else '✗'
+        table_data.append([
+            f"{row['home_team'][:8]} vs {row['away_team'][:8]}",
+            f"{row['home_score']}-{row['away_score']}",
+            row['result'],
+            row['predicted'],
+            correct_symbol,
+            f"{confidence:.3f}"
+        ])
+
+    table = ax4.table(cellText=table_data,
+                      colLabels=['Match', 'Score', 'Actual', 'Predicted', 'Correct', 'Confidence'],
+                      cellLoc='center',
+                      loc='center')
+    table.auto_set_font_size(False)
+    table.set_fontsize(9)
+    table.scale(1.2, 1.5)
+    ax4.set_title('Detailed Results')
+
+    plt.tight_layout()
+    plt.show()
+
+    # Print detailed results
+    print(f"\n=== Match Details ===")
+    for idx, row in target_matches.iterrows():
+        confidence = max([row[col] for col in prob_cols])
+        status = "✓" if row['result'] == row['predicted'] else "✗"
+        print(f"{row['home_team']} vs {row['away_team']}: {row['home_score']}-{row['away_score']} "
+              f"(Actual: {row['result']}, Predicted: {row['predicted']}, "
+              f"Confidence: {confidence:.3f}) {status}")
+
+
+def evaluate_multiple_days(df, features, start_day=15, end_day=25):
+    """
+    Evaluate model performance across multiple days
+    """
+    results = []
+
+    for day in range(start_day, end_day + 1):
+        target_matches, model, scaler, le_result = predict_day_realistically(df, day, features)
+
+        if target_matches is not None:
+            accuracy = accuracy_score(target_matches['result'], target_matches['predicted'])
+            results.append({
+                'day': day,
+                'accuracy': accuracy,
+                'num_matches': len(target_matches),
+                'correct_predictions': sum(target_matches['result'] == target_matches['predicted'])
+            })
+
+    results_df = pd.DataFrame(results)
+
+    # Plot performance over time
+    plt.figure(figsize=(12, 6))
+    plt.plot(results_df['day'], results_df['accuracy'], marker='o', linewidth=2, markersize=8)
+    plt.xlabel('Day')
+    plt.ylabel('Accuracy')
+    plt.title('Model Performance Over Time (Realistic Evaluation)')
+    plt.grid(True, alpha=0.3)
+    plt.axhline(y=results_df['accuracy'].mean(), color='red', linestyle='--',
+                label=f'Average: {results_df["accuracy"].mean():.2%}')
+    plt.legend()
+    plt.show()
+
+    print(f"\n=== Overall Performance Summary ===")
+    print(f"Days evaluated: {start_day}-{end_day}")
+    print(f"Average accuracy: {results_df['accuracy'].mean():.2%}")
+    print(
+        f"Best day: Day {results_df.loc[results_df['accuracy'].idxmax(), 'day']} ({results_df['accuracy'].max():.2%})")
+    print(
+        f"Worst day: Day {results_df.loc[results_df['accuracy'].idxmin(), 'day']} ({results_df['accuracy'].min():.2%})")
+
+    return results_df
+
+
+# Usage examples:
+print("=== REALISTIC EVALUATION ===")
+
+# 1. Predict day 15 using only data from days 1-14
+day_15_results, model, scaler, le_result = predict_day_realistically(df, 15, features)
+if day_15_results is not None:
+    visualize_realistic_predictions(day_15_results, 15)
+
+# 2. Evaluate multiple days
+print("\n" + "=" * 50)
+performance_df = evaluate_multiple_days(df, features, start_day=15, end_day=25)
